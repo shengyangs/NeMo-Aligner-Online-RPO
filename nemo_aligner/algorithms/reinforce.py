@@ -220,6 +220,8 @@ class ReinforceTrainer:
 
         print("RKL", rewards_with_kl)
         print("_"*50)
+        print("rpo_loss", rpo_loss)
+        print("_"*50)
         print("baseline", baseline)
         print("*"*50)
         # collect everything we need to train Reinforce
@@ -230,6 +232,7 @@ class ReinforceTrainer:
         ppo_rollout_data["prev_logprobs"] = logprobs
         ppo_rollout_data["response_tokens"] = response_tokens
         ppo_rollout_data["is_end"] = is_end
+        ppo_rollout_data["rpo_loss"] = rpo_loss
 
         # compute metrics
         # these are not global yet
@@ -238,7 +241,7 @@ class ReinforceTrainer:
         )
         ppo_rollout_metrics["rewards_with_kl"] = rewards_with_kl.sum().item()
         ppo_rollout_metrics["num_samples"] = prompt_lengths.size(0)
-        ppo_rollout_metrics["rpo_loss"] = torch.mean(rpo_loss).item()
+        ppo_rollout_metrics["rpo_loss"] = torch.sum(rpo_loss).item()
 
         # now the metrics are global
         ppo_rollout_metrics = all_reduce_dict(
@@ -393,14 +396,36 @@ class ReinforceTrainer:
                     mask=balanced_local_batch["is_end"].float(),
                 )
 
+                # TODO: do you need detach?
                 rewards_with_kl = logprobs_gt_rewards.exp() - logprobs_predicted_rewards.exp()
                 baseline = torch.zeros_like(rewards_with_kl)
-                rpo_loss = torch.mean(logprobs_gt_rewards.exp() * (logprobs_gt_rewards - logprobs_predicted_rewards)) * self.num_rollouts_per_prompt
+                rpo_loss = logprobs_gt_rewards.exp() * (logprobs_gt_rewards - logprobs_predicted_rewards)
                 
-                # raw_reward = self.cfg.gt_reward_scale * balanced_local_batch["rewards"]
-                # raw_kl = self.cfg.initial_policy_kl_penalty * init_policy_kl
-                # raw_mask = balanced_local_batch["is_end"]
-                # print(f"rewards_with_kl shape = {rewards_with_kl} | rpo_loss = {rpo_loss} | num_rollouts_per_prompt = {self.num_rollouts_per_prompt} | logprobs_gt_rewards = {logprobs_gt_rewards} | logprobs_predicted_rewards = {logprobs_predicted_rewards} | raw_reward = {raw_reward} | raw_kl = {raw_kl} | raw_mask={raw_mask}")
+                raw_reward = self.cfg.gt_reward_scale * balanced_local_batch["rewards"]
+                raw_kl = self.cfg.initial_policy_kl_penalty * init_policy_kl
+                raw_mask = balanced_local_batch["is_end"]
+                print(f"rewards_with_kl shape = {rewards_with_kl} | rpo_loss = {rpo_loss.sum()} {rpo_loss} | num_rollouts_per_prompt = {self.num_rollouts_per_prompt} | logprobs_gt_rewards = {logprobs_gt_rewards} | logprobs_predicted_rewards = {logprobs_predicted_rewards} | raw_reward = {raw_reward} | raw_kl = {raw_kl} | raw_mask={raw_mask}")
+            elif self.cfg.rpo_metric == "bwd_kl_v2":
+                assert not self.cfg.use_absolute_kl, "use_absolute_kl has to be False in bwd_kl"
+                logprobs_gt_rewards = calculate_rewards_logprobs(
+                    prompts=balanced_local_batch["prompt_tokens"],
+                    reward=self.cfg.gt_reward_scale * balanced_local_batch["rewards"],
+                    mask=balanced_local_batch["is_end"].float(),
+                )
+                logprobs_predicted_rewards = calculate_rewards_logprobs(
+                    prompts=balanced_local_batch["prompt_tokens"],
+                    reward=self.cfg.initial_policy_kl_penalty * init_policy_kl,
+                    mask=balanced_local_batch["is_end"].float(),
+                )
+
+                rewards_with_kl = logprobs_gt_rewards.exp() # - logprobs_predicted_rewards.exp()
+                baseline = torch.zeros_like(rewards_with_kl)
+                rpo_loss = logprobs_gt_rewards.exp() * (logprobs_gt_rewards - logprobs_predicted_rewards)
+                
+                raw_reward = self.cfg.gt_reward_scale * balanced_local_batch["rewards"]
+                raw_kl = self.cfg.initial_policy_kl_penalty * init_policy_kl
+                raw_mask = balanced_local_batch["is_end"]
+                print(f"rewards_with_kl shape = {rewards_with_kl} | rpo_loss = {rpo_loss.sum()} {rpo_loss} | num_rollouts_per_prompt = {self.num_rollouts_per_prompt} | logprobs_gt_rewards = {logprobs_gt_rewards} | logprobs_predicted_rewards = {logprobs_predicted_rewards} | raw_reward = {raw_reward} | raw_kl = {raw_kl} | raw_mask={raw_mask}")
             else:
                 raise ValueError(f"The rpo_metric = {self.cfg.rpo_metric} is not supported")
 
@@ -566,6 +591,7 @@ class ReinforceTrainer:
                     table_metrics["reward"],
                 ]
                 metrics["epoch"] = self.epoch + 1
+                print(f"step = {self.step} | metrics = {metrics}")
                 self.logger.log_metrics(
                     metrics, step=self.step, prefix="train_rollouts/",
                 )

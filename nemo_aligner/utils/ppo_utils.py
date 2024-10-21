@@ -137,10 +137,13 @@ def calculate_rewards_logprobs(prompts, reward, mask):
         is_matching_prompt = (prompts == unique_prompts[i]).all(1)
         prompt_idx = torch.arange(len(prompts), device=reward_device)[is_matching_prompt]
 
-        if mask[prompt_idx].sum() <= 1:
-            logprobs[prompt_idx] = torch.zeros_like(reward[prompt_idx])
-        else:
-            masked_reward = torch.where(mask[prompt_idx].bool(), reward[prompt_idx], torch.full_like(reward[prompt_idx], -1e10))
-            logprobs[prompt_idx] = torch.nn.functional.log_softmax(masked_reward, dim=0)
-            
+        # if mask[prompt_idx].sum() <= 1:
+        #     logprobs[prompt_idx] = torch.zeros_like(reward[prompt_idx])
+        # else:
+        #     masked_reward = torch.where(mask[prompt_idx].bool(), reward[prompt_idx], torch.full_like(reward[prompt_idx], -1e10))
+        #     logprobs[prompt_idx] = torch.nn.functional.log_softmax(masked_reward, dim=0)
+
+        # ignore mask
+        logprobs[prompt_idx] = torch.nn.functional.log_softmax(reward[prompt_idx], dim=0)
+
     return logprobs
