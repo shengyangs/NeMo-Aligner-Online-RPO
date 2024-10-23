@@ -380,6 +380,8 @@ class ReinforceTrainer:
                     
                 # RPO_LOSS = (predicted_reward_loo - explicit_reward_loo)**2 = baseline ** 2
                 rpo_loss = torch.mean(baseline ** 2) * self.num_rollouts_per_prompt
+                raw_reward = balanced_local_batch["rewards"]
+                print(f"rewards = {raw_reward}")
             elif self.cfg.rpo_metric == "bwd_kl":
                 assert not self.cfg.use_absolute_kl, "use_absolute_kl has to be False in bwd_kl"
                 logprobs_gt_rewards = calculate_rewards_logprobs(
