@@ -43,25 +43,25 @@ class HelpsteerTemplate:
         return f"""{text}\n<extra_id_2>"""
 
 class Eval_Llama3_Instruct_RM:
-    def get_first_turn_template(self):
-        return """<|begin_of_text|><|start_header_id|>system<|end_header_id|>
+    def get_first_turn_template(self, text):
+        return f"""<|begin_of_text|><|start_header_id|>system<|end_header_id|>
 
 <|eot_id|><|start_header_id|>user<|end_header_id|>
 
 {text}"""
 
-    def get_assistant_turn_template(self):
-        return """<|eot_id|><|start_header_id|>assistant<|end_header_id|>
+    def get_assistant_turn_template(self, text):
+        return f"""<|eot_id|><|start_header_id|>assistant<|end_header_id|>
 
 {text}"""
 
-    def get_user_turn_template(self):
-        return """<|eot_id|><|start_header_id|>user<|end_header_id|>
+    def get_user_turn_template(self, text):
+        return f"""<|eot_id|><|start_header_id|>user<|end_header_id|>
 
 {text}"""
 
-    def add_ending(self):
-        return """{text}<|eot_id|>"""
+    def add_ending(self, text):
+        return f"""{text}<|eot_id|>"""
 
 
 
@@ -298,7 +298,7 @@ class RemoteGPTRMClient:
                 print("0O0"*60)
             else:
                 text = chat_template(user_text=user_text, assistant_text=assistant_text, template=self.cfg.prompt_template)
-                print(f"text sent to RM = {text}")
+                # print(f"text sent to RM = {text}")
             texts.append(text)
 
         send_data = {
