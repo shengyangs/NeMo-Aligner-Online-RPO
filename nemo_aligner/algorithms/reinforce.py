@@ -287,12 +287,16 @@ class ReinforceTrainer:
                         rollout_batch = self.model.infer(batch)
                         rollout_batch["prompt_tokens"] = batch["text"] # Save prompt tokens for rloo
                         rollout_batches.append(rollout_batch)
-                        futures.append(self.rm_critic.infer_rm_critic(rollout_batch, self.model))
+                        rewards_in_rm_failure = torch.full((rollout_batch["prompt_tokens"].size(0),), -1e10,
+                                                           device=rollout_batch["prompt_tokens"].device, dtype=torch.float32)
+                        futures.append((self.rm_critic.infer_rm_critic(rollout_batch, self.model), rewards_in_rm_failure))
                 else:
                     rollout_batch = self.model.infer(batch)
                     rollout_batch["prompt_tokens"] = batch["text"] # Save prompt tokens for rloo
                     rollout_batches.append(rollout_batch)
-                    futures.append(self.rm_critic.infer_rm_critic(rollout_batch, self.model))
+                    rewards_in_rm_failure = torch.full((rollout_batch["prompt_tokens"].size(0),), -1e10,
+                                                        device=rollout_batch["prompt_tokens"].device, dtype=torch.float32)
+                    futures.append((self.rm_critic.infer_rm_critic(rollout_batch, self.model), rewards_in_rm_failure))
 
             timer_metrics["generate"] = self.timer.stop_and_get_time("generate")
 
@@ -330,9 +334,13 @@ class ReinforceTrainer:
         with reshard_context():
             self.timer.start("critic_wait")
             rm_value_rollout_batches = []
-            for future in futures:
-                rewards = future.result()
-                rm_value_rollout_batches.append({"rewards": rewards})
+            for future, rewards_in_rm_failure in futures:
+                try:
+                    rewards = future.result()
+                    rm_value_rollout_batches.append({"rewards": rewards, "valid_reward_mask": torch.ones_like(rewards, dtype=torch.bool)})
+                except:
+                    print("!!!!!!! RM inference failed. This example will be ignored!!!!!!!!")
+                    rm_value_rollout_batches.append({"rewards": rewards_in_rm_failure, "valid_reward_mask": torch.zeros_like(rewards_in_rm_failure, dtype=torch.bool)})
             timer_metrics["critic_wait"] = self.timer.stop_and_get_time("critic_wait")
 
             unbalanced_rm_value_batch = PPORolloutBatch.from_rollout_batches(
@@ -392,42 +400,25 @@ class ReinforceTrainer:
                     reward=self.cfg.gt_reward_scale * balanced_local_batch["rewards"],
                     mask=balanced_local_batch["is_end"].float(),
                 )
+                # when the RM inference failed, set the init_policy_kl to -1e10 to ignore the corresponding example
+                masked_init_policy_kl = torch.where(balanced_local_batch["valid_reward_mask"], init_policy_kl, torch.full_like(init_policy_kl, -1e10))
                 logprobs_predicted_rewards = calculate_rewards_logprobs(
                     prompts=balanced_local_batch["prompt_tokens"],
-                    reward=self.cfg.initial_policy_kl_penalty * init_policy_kl,
+                    reward=self.cfg.initial_policy_kl_penalty * masked_init_policy_kl,
                     mask=balanced_local_batch["is_end"].float(),
                 )
 
                 # TODO: do you need detach?
                 rewards_with_kl = logprobs_gt_rewards.exp() - logprobs_predicted_rewards.exp()
+                rewards_with_kl = rewards_with_kl * balanced_local_batch["valid_reward_mask"].float()
                 baseline = torch.zeros_like(rewards_with_kl)
                 rpo_loss = logprobs_gt_rewards.exp() * (logprobs_gt_rewards - logprobs_predicted_rewards)
                 
                 raw_reward = self.cfg.gt_reward_scale * balanced_local_batch["rewards"]
                 raw_kl = self.cfg.initial_policy_kl_penalty * init_policy_kl
-                raw_mask = balanced_local_batch["is_end"]
-                print(f"rewards_with_kl shape = {rewards_with_kl} | rpo_loss = {rpo_loss.sum()} {rpo_loss} | num_rollouts_per_prompt = {self.num_rollouts_per_prompt} | logprobs_gt_rewards = {logprobs_gt_rewards} | logprobs_predicted_rewards = {logprobs_predicted_rewards} | raw_reward = {raw_reward} | raw_kl = {raw_kl} | raw_mask={raw_mask}")
-            elif self.cfg.rpo_metric == "bwd_kl_v2":
-                assert not self.cfg.use_absolute_kl, "use_absolute_kl has to be False in bwd_kl"
-                logprobs_gt_rewards = calculate_rewards_logprobs(
-                    prompts=balanced_local_batch["prompt_tokens"],
-                    reward=self.cfg.gt_reward_scale * balanced_local_batch["rewards"],
-                    mask=balanced_local_batch["is_end"].float(),
-                )
-                logprobs_predicted_rewards = calculate_rewards_logprobs(
-                    prompts=balanced_local_batch["prompt_tokens"],
-                    reward=self.cfg.initial_policy_kl_penalty * init_policy_kl,
-                    mask=balanced_local_batch["is_end"].float(),
-                )
-
-                rewards_with_kl = logprobs_gt_rewards.exp() # - logprobs_predicted_rewards.exp()
-                baseline = torch.zeros_like(rewards_with_kl)
-                rpo_loss = logprobs_gt_rewards.exp() * (logprobs_gt_rewards - logprobs_predicted_rewards)
-                
-                raw_reward = self.cfg.gt_reward_scale * balanced_local_batch["rewards"]
-                raw_kl = self.cfg.initial_policy_kl_penalty * init_policy_kl
-                raw_mask = balanced_local_batch["is_end"]
-                print(f"rewards_with_kl shape = {rewards_with_kl} | rpo_loss = {rpo_loss.sum()} {rpo_loss} | num_rollouts_per_prompt = {self.num_rollouts_per_prompt} | logprobs_gt_rewards = {logprobs_gt_rewards} | logprobs_predicted_rewards = {logprobs_predicted_rewards} | raw_reward = {raw_reward} | raw_kl = {raw_kl} | raw_mask={raw_mask}")
+                raw_masked_kl = self.cfg.initial_policy_kl_penalty * masked_init_policy_kl
+                raw_valid_reward_mask = balanced_local_batch["valid_reward_mask"]
+                print(f"rewards_with_kl shape = {rewards_with_kl} | rpo_loss = {rpo_loss.sum()} {rpo_loss} | num_rollouts_per_prompt = {self.num_rollouts_per_prompt} | logprobs_gt_rewards = {logprobs_gt_rewards} | logprobs_predicted_rewards = {logprobs_predicted_rewards} | raw_reward = {raw_reward} | raw_kl = {raw_kl} | scaled_kl = {raw_masked_kl} | raw_valid_reward_mask={raw_valid_reward_mask}")
             else:
                 raise ValueError(f"The rpo_metric = {self.cfg.rpo_metric} is not supported")
 
