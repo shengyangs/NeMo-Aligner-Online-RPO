@@ -377,7 +377,13 @@ class ReinforceTrainer:
 
             # Calculate RLOO baseline
             if self.cfg.rpo_metric == "sq_loo":
-                rewards_with_kl = self.cfg.gt_reward_scale * balanced_local_batch["rewards"] - self.cfg.initial_policy_kl_penalty * init_policy_kl
+                # when the RM inference failed, set the rewards_with_kl=0. Note that this will impact the computed baseline 
+                # (e.g., when one of K responses failed, its rewards_with_kl=0 still contributes to the baseline).
+                # The gradient is still unbiased.
+                rewards_with_kl = torch.where(
+                    balanced_local_batch["valid_reward_mask"], 
+                    self.cfg.gt_reward_scale * balanced_local_batch["rewards"] - self.cfg.initial_policy_kl_penalty * init_policy_kl,
+                    torch.zeros_like(init_policy_kl))
                 baseline, baseline_std = calculate_rloo_baseline(
                     prompts=balanced_local_batch["prompt_tokens"],
                     reward=rewards_with_kl,
