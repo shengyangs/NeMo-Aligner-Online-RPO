@@ -42,6 +42,7 @@ from nemo_aligner.utils.ppo_utils import (
     calculate_rewards_logprobs,
     calculate_kl_penalty,
     create_mask,
+    calculate_rewards_mean_std,
 )
 from nemo_aligner.utils.server_utils import FutureResult
 from nemo_aligner.utils.train_utils import clip_gradients
@@ -383,6 +384,18 @@ class ReinforceTrainer:
                     
                 # RPO_LOSS = (predicted_reward_loo - explicit_reward_loo)**2 = baseline ** 2
                 rpo_loss = torch.mean(baseline ** 2) * self.num_rollouts_per_prompt
+                raw_reward = balanced_local_batch["rewards"]
+                print(f"rewards = {raw_reward}")
+            elif self.cfg.rpo_metric == "grpo":
+                # TODO: GRPO uses a different estimation of the KL divergence. Here I still used log \pi_\theta - \log \pi_{ref} for fair comparison.
+                rewards_mean, rewards_std = calculate_rewards_mean_std(
+                    prompts=balanced_local_batch["prompt_tokens"],
+                    reward=balanced_local_batch["rewards"],
+                    mask=balanced_local_batch["is_end"].float(),
+                )
+                rewards_with_kl = (balanced_local_batch["rewards"] - rewards_mean) / rewards_std - self.cfg.initial_policy_kl_penalty * init_policy_kl
+                baseline = torch.zeros_like(rewards_with_kl)
+                rpo_loss = (balanced_local_batch["rewards"] - rewards_mean) ** 2.
                 raw_reward = balanced_local_batch["rewards"]
                 print(f"rewards = {raw_reward}")
             elif self.cfg.rpo_metric == "bwd_kl":

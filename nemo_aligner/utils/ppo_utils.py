@@ -124,6 +124,25 @@ def calculate_rloo_baseline(prompts, reward, mask, normalize_variance):
     return baseline, baseline_std
 
 
+def calculate_rewards_mean_std(prompts, reward, mask):
+    '''
+    Function to compute the mean and stddev of rewards for each prompt in the batch.
+    '''
+    unique_prompts = torch.unique(prompts, dim=0)
+
+    rewards_mean = torch.zeros_like(reward)
+    rewards_std = torch.ones_like(reward)
+    reward_device = reward.get_device()
+    for i in range(len(unique_prompts)):
+        is_matching_prompt = (prompts == unique_prompts[i]).all(1)
+        prompt_idx = torch.arange(len(prompts), device=reward_device)[is_matching_prompt]
+        rewards_subset = reward[prompt_idx] * mask[prompt_idx]
+        rewards_mean[prompt_idx] = rewards_subset.mean()
+        rewards_std[prompt_idx] = rewards_subset.std() + 1e-3
+            
+    return rewards_mean, rewards_std
+
+
 def calculate_rewards_logprobs(prompts, reward, mask):
     '''
     For each prompt and its corresponding rewards r1, r2, ..., rk. 
